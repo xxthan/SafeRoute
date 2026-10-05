@@ -1,0 +1,6 @@
+id,road_name,latitude,longitude,lighting,pedestrian_activity,incident_level,dog_activity,road_condition,data_source
+1,Grand Southern Trunk Road (NH32),12.927719,80.118742,,,,,,Public road/location data; coordinate at Tambaram Bus Stand
+2,Tambaram-Velachery Main Road,12.9233,80.1597,,,,,,Public road/location data
+3,Mudichur Road,12.9239,80.0979,,,,,,Public road/location data
+4,Camp Road,12.9161,80.1444,,,,,,Public road/location data
+5,Camp Road Junction,12.9223,80.143,,,,,,Public road/location data

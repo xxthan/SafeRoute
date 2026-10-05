@@ -1,0 +1,6 @@
+id,name,type,latitude,longitude,data_source
+1,Tambaram Bus Stand,Bus Stand,12.927719,80.1187421,OpenStreetMap-derived public location data
+2,Tambaram Sanatorium Bus Stand,Bus Stand,12.9372,80.12729,OpenStreetMap-derived public location data
+3,"Government Hospital, Tambaram",Hospital,12.94505,80.13456,Open Government Data location listing
+4,A.G Hospital,Hospital,12.9264826,80.1117834,Public location data
+5,"Police Booth, Tambaram",Police,12.89757,80.18232,OpenStreetMap-derived public location data
