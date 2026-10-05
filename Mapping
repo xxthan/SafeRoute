@@ -1,0 +1,846 @@
+import { useEffect, useState } from "react";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Polyline,
+  useMap,
+} from "react-leaflet";
+
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+
+// --------------------------------------------------
+// ROUTE COLORS
+// --------------------------------------------------
+
+const routeColors = [
+  "#2563eb",
+  "#dc2626",
+  "#16a34a",
+  "#9333ea",
+  "#ea580c",
+];
+
+// --------------------------------------------------
+// ROUTING COMPONENT
+// --------------------------------------------------
+
+function Routing({
+  from,
+  to,
+  setRoutes,
+  selectedRoute,
+  setSelectedRoute,
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!from || !to) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function calculateRoutes() {
+      try {
+        /*
+         * We create several candidate waypoints automatically.
+         *
+         * IMPORTANT:
+         * These are NOT hard-coded locations like Vandalur.
+         * They are generated from the actual From/To coordinates.
+         */
+
+        const candidates = createCandidatePoints(from, to);
+
+        const routeResults = [];
+
+        // --------------------------------------------------
+        // ROUTE 1: DIRECT / NORMAL ROUTE
+        // --------------------------------------------------
+
+        const directRoute = await getRoute([from, to]);
+
+        if (directRoute) {
+          routeResults.push({
+            index: routeResults.length,
+            distance: directRoute.distance,
+            time: directRoute.time,
+            coordinates: directRoute.coordinates,
+          });
+        }
+
+        // --------------------------------------------------
+        // ALTERNATIVE ROUTES
+        // --------------------------------------------------
+
+        for (const candidate of candidates) {
+          const route = await getRoute([
+            from,
+            candidate,
+            to,
+          ]);
+
+          if (!route) {
+            continue;
+          }
+
+          /*
+           * Don't add routes that are basically identical
+           * to routes we already have.
+           */
+
+          const isDifferent = routeResults.every(
+            (existingRoute) =>
+              Math.abs(
+                existingRoute.distance -
+                  route.distance
+              ) > 0.5
+          );
+
+          if (isDifferent) {
+            routeResults.push({
+              index: routeResults.length,
+              distance: route.distance,
+              time: route.time,
+              coordinates: route.coordinates,
+            });
+          }
+
+          // We don't need an enormous number of routes
+          if (routeResults.length >= 4) {
+            break;
+          }
+        }
+
+        if (!cancelled) {
+          setRoutes(routeResults);
+
+          if (routeResults.length > 0) {
+            setSelectedRoute(0);
+
+            // Fit map to the first route
+            const firstRoute =
+              routeResults[0].coordinates;
+
+            const bounds =
+              L.latLngBounds(firstRoute);
+
+            map.fitBounds(bounds, {
+              padding: [40, 40],
+            });
+          }
+        }
+      } catch (error) {
+        console.error(
+          "Routing error:",
+          error
+        );
+      }
+    }
+
+    calculateRoutes();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    from,
+    to,
+    map,
+    setRoutes,
+    setSelectedRoute,
+  ]);
+
+  return null;
+}
+
+// --------------------------------------------------
+// CREATE GENERIC ALTERNATIVE WAYPOINTS
+// --------------------------------------------------
+
+function createCandidatePoints(from, to) {
+  const lat1 = from.lat;
+  const lon1 = from.lon;
+
+  const lat2 = to.lat;
+  const lon2 = to.lon;
+
+  // Midpoint
+  const midLat = (lat1 + lat2) / 2;
+  const midLon = (lon1 + lon2) / 2;
+
+  /*
+   * Calculate a perpendicular direction.
+   *
+   * This lets us create points to either side
+   * of the normal route.
+   */
+
+  const deltaLat = lat2 - lat1;
+  const deltaLon = lon2 - lon1;
+
+  const length = Math.sqrt(
+    deltaLat * deltaLat +
+      deltaLon * deltaLon
+  );
+
+  if (length === 0) {
+    return [];
+  }
+
+  const perpendicularLat =
+    -deltaLon / length;
+
+  const perpendicularLon =
+    deltaLat / length;
+
+  /*
+   * Different offsets create different
+   * candidate corridors.
+   *
+   * These are relative to the journey,
+   * NOT fixed locations.
+   */
+
+  const offsets = [
+    0.03,
+    -0.03,
+    0.06,
+    -0.06,
+  ];
+
+  return offsets.map((offset) => ({
+    lat:
+      midLat +
+      perpendicularLat * offset,
+
+    lon:
+      midLon +
+      perpendicularLon * offset,
+  }));
+}
+
+// --------------------------------------------------
+// GET ONE ROUTE FROM OSRM
+// --------------------------------------------------
+
+async function getRoute(points) {
+  try {
+    const coordinates = points
+      .map(
+        (point) =>
+          `${point.lon},${point.lat}`
+      )
+      .join(";");
+
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson&steps=false`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+
+    if (
+      data.code !== "Ok" ||
+      !data.routes ||
+      data.routes.length === 0
+    ) {
+      return null;
+    }
+
+    const route = data.routes[0];
+
+    return {
+      distance: (
+        route.distance / 1000
+      ).toFixed(1),
+
+      time: Math.round(
+        route.duration / 60
+      ),
+
+      coordinates:
+        route.geometry.coordinates.map(
+          ([lon, lat]) => [lat, lon]
+        ),
+    };
+  } catch (error) {
+    console.error(
+      "OSRM route error:",
+      error
+    );
+
+    return null;
+  }
+}
+
+// --------------------------------------------------
+// MAIN APP
+// --------------------------------------------------
+
+function App() {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const [fromLocation, setFromLocation] =
+    useState(null);
+
+  const [toLocation, setToLocation] =
+    useState(null);
+
+  const [routes, setRoutes] = useState([]);
+
+  const [selectedRoute, setSelectedRoute] =
+    useState(null);
+
+  const [safetyData, setSafetyData] =
+    useState([]);
+
+  const [placesData, setPlacesData] =
+    useState([]);
+
+  // --------------------------------------------------
+  // LOAD CSV DATA
+  // --------------------------------------------------
+
+  useEffect(() => {
+    loadSafetyData();
+    loadPlacesData();
+  }, []);
+
+  async function loadSafetyData() {
+    try {
+      const response = await fetch(
+        "/road_safety_real.csv"
+      );
+
+      const text = await response.text();
+
+      const rows = text
+        .trim()
+        .split("\n");
+
+      const headers =
+        rows[0].split(",");
+
+      const data = rows
+        .slice(1)
+        .map((row) => {
+          const values =
+            row.split(",");
+
+          const obj = {};
+
+          headers.forEach(
+            (header, index) => {
+              obj[header.trim()] =
+                values[index]?.trim();
+            }
+          );
+
+          return obj;
+        });
+
+      setSafetyData(data);
+    } catch (error) {
+      console.error(
+        "Error loading safety data:",
+        error
+      );
+    }
+  }
+
+  async function loadPlacesData() {
+    try {
+      const response = await fetch(
+        "/places_real.csv"
+      );
+
+      const text =
+        await response.text();
+
+      const rows = text
+        .trim()
+        .split("\n");
+
+      const headers =
+        rows[0].split(",");
+
+      const data = rows
+        .slice(1)
+        .map((row) => {
+          const values =
+            row.split(",");
+
+          const obj = {};
+
+          headers.forEach(
+            (header, index) => {
+              obj[header.trim()] =
+                values[index]?.trim();
+            }
+          );
+
+          return obj;
+        });
+
+      setPlacesData(data);
+    } catch (error) {
+      console.error(
+        "Error loading places data:",
+        error
+      );
+    }
+  }
+
+  // --------------------------------------------------
+  // SEARCH LOCATION
+  // --------------------------------------------------
+
+  async function searchPlace(place) {
+    try {
+      const url =
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(place)}`;
+
+      const response =
+        await fetch(url);
+
+      const data =
+        await response.json();
+
+      if (data.length === 0) {
+        alert(
+          `Could not find: ${place}`
+        );
+
+        return null;
+      }
+
+      return {
+        lat: Number(data[0].lat),
+        lon: Number(data[0].lon),
+      };
+    } catch (error) {
+      console.error(
+        "Location search error:",
+        error
+      );
+
+      alert(
+        "Could not search for this location."
+      );
+
+      return null;
+    }
+  }
+
+  // --------------------------------------------------
+  // FIND ROUTES
+  // --------------------------------------------------
+
+  async function handleSearch() {
+    if (!from || !to) {
+      alert(
+        "Please enter both locations."
+      );
+
+      return;
+    }
+
+    setRoutes([]);
+    setSelectedRoute(null);
+
+    const start =
+      await searchPlace(from);
+
+    const destination =
+      await searchPlace(to);
+
+    if (start && destination) {
+      setFromLocation(start);
+      setToLocation(destination);
+    }
+  }
+
+  // --------------------------------------------------
+  // SELECT ROUTE
+  // --------------------------------------------------
+
+  function chooseRoute(index) {
+    setSelectedRoute(index);
+  }
+
+  // --------------------------------------------------
+  // DISPLAY
+  // --------------------------------------------------
+
+  return (
+    <div>
+
+      <h1>
+        SafeRoute 🛡️
+      </h1>
+
+      {/* SEARCH */}
+
+      <div>
+
+        <input
+          type="text"
+          placeholder="From"
+          value={from}
+          onChange={(e) =>
+            setFrom(e.target.value)
+          }
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              handleSearch();
+            }
+          }}
+        />
+
+        <input
+          type="text"
+          placeholder="To"
+          value={to}
+          onChange={(e) =>
+            setTo(e.target.value)
+          }
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              handleSearch();
+            }
+          }}
+        />
+
+        <button
+          onClick={handleSearch}
+        >
+          Find Route
+        </button>
+
+      </div>
+
+      {/* ROUTE OPTIONS */}
+
+      {routes.length > 0 && (
+        <div>
+
+          <h2>
+            Available Routes
+          </h2>
+
+          {routes.map((route) => (
+
+            <div
+              key={route.index}
+              style={{
+                border:
+                  selectedRoute ===
+                  route.index
+                    ? "3px solid #2563eb"
+                    : "1px solid #ccc",
+
+                padding: "15px",
+                margin: "10px 0",
+                borderRadius: "10px",
+              }}
+            >
+
+              <h3>
+                {route.index === 0
+                  ? "Route 1 ⭐"
+                  : `Route ${
+                      route.index + 1
+                    }`}
+              </h3>
+
+              <p>
+                📏 Distance:{" "}
+                {route.distance} km
+              </p>
+
+              <p>
+                ⏱️ Estimated time:{" "}
+                {route.time} minutes
+              </p>
+
+              <button
+                onClick={() =>
+                  chooseRoute(
+                    route.index
+                  )
+                }
+              >
+                {selectedRoute ===
+                route.index
+                  ? "✓ Selected"
+                  : "Choose Route"}
+              </button>
+
+            </div>
+
+          ))}
+
+        </div>
+      )}
+
+      {/* MAP */}
+
+      <MapContainer
+        center={[
+          20.5937,
+          78.9629,
+        ]}
+        zoom={5}
+        style={{
+          height: "500px",
+          width: "100%",
+        }}
+      >
+
+        <TileLayer
+          url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution="&copy; OpenStreetMap contributors"
+        />
+
+        {/* FROM */}
+
+        {fromLocation && (
+          <Marker
+            position={[
+              fromLocation.lat,
+              fromLocation.lon,
+            ]}
+          >
+            <Popup>
+              <b>
+                Starting Point
+              </b>
+
+              <br />
+
+              {from}
+            </Popup>
+          </Marker>
+        )}
+
+        {/* TO */}
+
+        {toLocation && (
+          <Marker
+            position={[
+              toLocation.lat,
+              toLocation.lon,
+            ]}
+          >
+            <Popup>
+              <b>
+                Destination
+              </b>
+
+              <br />
+
+              {to}
+            </Popup>
+          </Marker>
+        )}
+
+        {/* ROUTES */}
+
+        {routes.map((route) => (
+          <Polyline
+            key={route.index}
+            positions={
+              route.coordinates
+            }
+
+            pathOptions={{
+              color:
+                routeColors[
+                  route.index %
+                    routeColors.length
+                ],
+
+              weight:
+                selectedRoute ===
+                route.index
+                  ? 7
+                  : 4,
+
+              opacity:
+                selectedRoute ===
+                route.index
+                  ? 1
+                  : 0.6,
+            }}
+          />
+        ))}
+
+        {/* SAFETY DATA */}
+
+        {safetyData.map((road) => {
+
+          if (
+            !road.latitude ||
+            !road.longitude
+          ) {
+            return null;
+          }
+
+          return (
+            <Marker
+              key={`road-${road.id}`}
+              position={[
+                Number(
+                  road.latitude
+                ),
+                Number(
+                  road.longitude
+                ),
+              ]}
+            >
+
+              <Popup>
+
+                <b>
+                  🛡️ Road Safety Information
+                </b>
+
+                <br />
+                <br />
+
+                <b>Road:</b>{" "}
+                {road.road_name}
+
+                <br />
+
+                <b>Lighting:</b>{" "}
+                {road.lighting ||
+                  "No data"}
+
+                <br />
+
+                <b>
+                  Pedestrian activity:
+                </b>{" "}
+                {road.pedestrian_activity ||
+                  "No data"}
+
+                <br />
+
+                <b>
+                  Incident level:
+                </b>{" "}
+                {road.incident_level ||
+                  "No data"}
+
+                <br />
+
+                <b>
+                  Dog activity:
+                </b>{" "}
+                {road.dog_activity ||
+                  "No data"}
+
+                <br />
+
+                <b>
+                  Road condition:
+                </b>{" "}
+                {road.road_condition ||
+                  "No data"}
+
+                <br />
+                <br />
+
+                <small>
+                  Source:{" "}
+                  {road.data_source}
+                </small>
+
+              </Popup>
+
+            </Marker>
+          );
+        })}
+
+        {/* NEARBY PLACES */}
+
+        {placesData.map((place) => {
+
+          if (
+            !place.latitude ||
+            !place.longitude
+          ) {
+            return null;
+          }
+
+          return (
+            <Marker
+              key={`place-${place.id}`}
+              position={[
+                Number(
+                  place.latitude
+                ),
+                Number(
+                  place.longitude
+                ),
+              ]}
+            >
+
+              <Popup>
+
+                <b>
+                  📍 {place.name}
+                </b>
+
+                <br />
+
+                <b>
+                  Type:
+                </b>{" "}
+                {place.type}
+
+                <br />
+                <br />
+
+                <small>
+                  Source:{" "}
+                  {place.data_source}
+                </small>
+
+              </Popup>
+
+            </Marker>
+          );
+        })}
+
+        {/* ROUTING */}
+
+        <Routing
+          from={fromLocation}
+          to={toLocation}
+          setRoutes={setRoutes}
+          selectedRoute={
+            selectedRoute
+          }
+          setSelectedRoute={
+            setSelectedRoute
+          }
+        />
+
+      </MapContainer>
+
+    </div>
+  );
+}
+
+export default App;
